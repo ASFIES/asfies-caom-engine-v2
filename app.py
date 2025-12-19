@@ -185,8 +185,8 @@ LISTA DE OPCIONES (JSON):
 {json.dumps(items, ensure_ascii=False)}
 
 INSTRUCCIONES:
-- Si hay garantía: habla de “estrategias” y menciona CAOM.
-- Si NO hay garantía: tono sutil, alcance preliminar pon un enfasis de que nostros lamentablmente no lo podemos ayudar pero le hacemos unas recomendaciones, el no lo podemos ayudar que no sea tan estricto con una disculpa.
+- Si hay garantía: habla de “estrategias” y menciona CAOM no pongas estrategia 1 o 3 sino estrategia mas optima y asi las demas menciona que las estragias ponle un nombre por ejemplo estrategia alfa o fenix pero que se entienda a que nos referimos.
+- Si NO hay garantía: tono sutil, alcance preliminar pon un enfasis de que nostros lamentablmente no lo podemos ayudar pero le hacemos unas recomendaciones, el no lo podemos ayudar que no sea tan estricto con una disculpa el nombre de quien suscribe es Miguel Angel Briseño Estratega en Financiamiento.
 """.strip()
 
     try:
