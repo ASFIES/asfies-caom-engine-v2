@@ -1,141 +1,315 @@
 import os
-import smtplib
+import re
+import json
+import traceback
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
-from email.message import EmailMessage
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from openai import OpenAI
 
+# =========================
+# App
+# =========================
 app = Flask(__name__)
 CORS(app)
 
-# Configuración desde Variables de Entorno en Render
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-ASFIES_TOKEN = os.getenv("ASFIES_TOKEN")
-client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+# =========================
+# Config (ENV ONLY)
+# =========================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
+ASFIES_TOKEN = os.getenv("ASFIES_TOKEN", "").strip()
 
-MATRIZ_FILE = "matriz.xlsx"
+MODEL = os.getenv("MODEL", "gpt-4o-mini").strip()
+MATRIZ_FILE = os.getenv("MATRIZ_FILE", "matriz.xlsx").strip()
 
-# Configuración SMTP
-SMTP_HOST = os.getenv("SMTP_HOST")
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER")
-SMTP_PASS = os.getenv("SMTP_PASS")
-MAIL_FROM = os.getenv("MAIL_FROM", SMTP_USER or "")
-MAIL_TO = os.getenv("MAIL_TO", "contacto@asfies.mx")
+# Cache simple de la matriz para no leer el Excel en cada request
+_MATRIZ_CACHE: Optional[pd.DataFrame] = None
 
-def filtrar_matriz(perfil: dict):
+
+# =========================
+# Utilidades
+# =========================
+def _log(msg: str):
+    print(f"[ASFIES-CAOM] {msg}", flush=True)
+
+
+def _safe_str(x: Any) -> str:
+    return "" if x is None else str(x).strip()
+
+
+def _load_matriz() -> pd.DataFrame:
+    """
+    Carga matriz.xlsx (una sola vez y cachea).
+    Debe estar en la raíz del repo junto a app.py.
+    """
+    global _MATRIZ_CACHE
+
+    if _MATRIZ_CACHE is not None:
+        return _MATRIZ_CACHE
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(base_dir, MATRIZ_FILE)
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No se encontró '{MATRIZ_FILE}' en el repo. Ruta esperada: {path}"
+        )
+
+    df = pd.read_excel(path)
+
+    # Normaliza nombres de columnas (por si vienen con espacios raros)
+    df.columns = [c.strip() for c in df.columns]
+
+    _MATRIZ_CACHE = df
+    _log(f"Matriz cargada: {path} (filas={len(df)}, cols={len(df.columns)})")
+    return df
+
+
+def _extract_min_years(val: Any) -> int:
+    """
+    Convierte la columna de Antigüedad de la matriz a un mínimo de años (int).
+    Si viene algo como "3 años", extrae 3.
+    """
+    s = _safe_str(val)
+    m = re.search(r"(\d+)", s)
+    return int(m.group(1)) if m else 0
+
+
+def _map_antiguedad_user(texto: str) -> int:
+    """
+    Convierte la antigüedad elegida por el usuario a años (conservador).
+    """
+    mapa = {
+        "Menos de 1 año": 0,
+        "Entre 1 y 3 años": 1,
+        "Entre 3 y 5 años": 3,
+        "Más de 5 años": 5,
+    }
+    return mapa.get(texto, 0)
+
+
+def obtener_recomendaciones(perfil: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Filtra la matriz según el perfil y retorna top 3 recomendaciones.
+    IMPORTANTE: Devuelve lista (puede ser []).
+    """
+    df = _load_matriz().copy()
+
+    # --- 1) Filtro por Rango de Ventas (si la matriz tiene esa columna exacta)
+    rango = _safe_str(perfil.get("ventas_rango"))
+    if rango and rango in df.columns:
+        df = df[df[rango].astype(str).str.upper().str.strip() == "X"]
+
+    # --- 2) Filtro por Antigüedad
+    user_ant = _safe_str(perfil.get("antiguedad"))
+    user_years = _map_antiguedad_user(user_ant)
+
+    # Columna puede llamarse 'Antigúedad' (con acento) o 'Antiguedad' (sin acento)
+    ant_col = None
+    for cand in ["Antigúedad", "Antiguedad", "Antigüedad"]:
+        if cand in df.columns:
+            ant_col = cand
+            break
+
+    if ant_col:
+        df["min_anios"] = df[ant_col].apply(_extract_min_years)
+        df = df[df["min_anios"] <= user_years]
+    else:
+        # Si no existe, no filtramos por antigüedad
+        df["min_anios"] = 0
+
+    # --- 3) (Opcional) filtro por tipo de financiamiento si la matriz lo soporta
+    tipo_user = _safe_str(perfil.get("tipo_financiamiento"))
+    # Busca una columna estándar
+    tipo_col = None
+    for cand in ["Tipo de financiamiento", "Tipo de financiamiento ", "Tipo", "Producto"]:
+        if cand in df.columns:
+            tipo_col = cand
+            break
+
+    if tipo_col and tipo_user:
+        # Filtro suave: contiene texto
+        df = df[df[tipo_col].astype(str).str.contains(tipo_user, case=False, na=False)]
+
+    # --- Selección top 3
+    top_df = df.head(3).copy()
+    if top_df.empty:
+        return []
+
+    # Mapeo de columnas (si cambian nombres, aquí se ajusta fácil)
+    def col(*names: str) -> str:
+        for n in names:
+            if n in top_df.columns:
+                return n
+        return ""
+
+    c_fin = col("Financiera", "Nombre", "Institución")
+    c_tipo = col("Tipo de financiamiento", "Tipo de financiamiento ", "Tipo", "Producto")
+    c_ayu = col("Como ayuda este financiamiento", "Cómo ayuda este financiamiento", "Ayuda", "Descripción")
+    c_mto = col("Montos en pesos", "Monto", "Montos")
+    c_plz = col("Plazos", "Plazo")
+
+    recs: List[Dict[str, Any]] = []
+    for _, row in top_df.iterrows():
+        recs.append({
+            "financiera": _safe_str(row.get(c_fin)),
+            "tipo": _safe_str(row.get(c_tipo)),
+            # Tu frontend actual imprime "caracteristicas"
+            "caracteristicas": _safe_str(row.get(c_ayu)),
+            # Para mostrar también si quieres
+            "monto_ref": _safe_str(row.get(c_mto)),
+            "plazo_ref": _safe_str(row.get(c_plz)),
+        })
+
+    return recs
+
+
+def generar_diagnostico_gpt(perfil: Dict[str, Any], recomendaciones: List[Dict[str, Any]]) -> str:
+    """
+    Genera diagnóstico con IA. Si no hay API key o falla, devuelve texto fallback.
+    """
+    tiene_garantia = bool(perfil.get("tiene_garantia_inmueble"))
+    contexto = "con garantía inmobiliaria bajo la metodología CAOM" if tiene_garantia else "sin garantía inmobiliaria"
+
+    # Fallback si no hay key
+    if not OPENAI_API_KEY:
+        return (
+            "Hemos procesado tu información para un diagnóstico preliminar. "
+            "Por el momento, las recomendaciones mostradas se basan en la matriz de instituciones aliadas. "
+            "Si deseas un análisis consultivo más profundo, un consultor puede revisarlo manualmente."
+        )
+
+    prompt = f"""
+Eres un asesor financiero experto de ASFIES Negocios Consulting.
+Redacta un diagnóstico profesional, consultivo, elegante y técnico (máximo 2 párrafos).
+
+PERFIL:
+- Contacto: {perfil.get("nombre","")} {perfil.get("apellido","")}
+- Empresa: {perfil.get("nombre_empresa","")}
+- Actividad: {perfil.get("actividad_economica","")}
+- Ventas: {perfil.get("ventas_rango","")}
+- Tipo de financiamiento: {perfil.get("tipo_financiamiento","")}
+- Estado: {contexto}
+
+RECOMENDACIONES (lista JSON):
+{json.dumps(recomendaciones, ensure_ascii=False)}
+
+INSTRUCCIONES:
+- Explica por qué estas opciones son estratégicas para su situación.
+- Si hay garantía, menciona que se aplicará la “Arquitectura y Optimización de Capital (CAOM)”.
+- Si NO hay garantía, usa un tono sutil para indicar que el alcance es preliminar y puede ser limitado.
+""".strip()
+
     try:
-        if not os.path.exists(MATRIZ_FILE): return None
-        df = pd.read_excel(MATRIZ_FILE)
+        # OpenAI SDK (openai>=1.x)
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
 
-        # 1. Filtro por Ventas
-        rango_v = perfil.get("ventas_rango", "")
-        if rango_v in df.columns:
-            df = df[df[rango_v].astype(str).str.upper() == "X"]
+        resp = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7,
+        )
+        return resp.choices[0].message.content.strip()
 
-        # 2. Análisis de Monto y Plazo (Búsqueda por palabras clave o coincidencia parcial)
-        monto_u = str(perfil.get("monto_requerido", ""))
-        plazo_u = str(perfil.get("plazo_requerido", ""))
-        
-        # Priorizamos filas que mencionen montos o plazos similares en sus columnas de texto
-        if monto_u:
-            df['match_monto'] = df['Montos en pesos'].astype(str).str.contains(monto_u.split(' ')[0], case=False)
-        if plazo_u:
-            df['match_plazo'] = df['Plazos'].astype(str).str.contains(plazo_u.split(' ')[0], case=False)
-
-        # 3. Filtro por Antigüedad
-        ant_map = {"Menos de 1 año": 0, "Entre 1 y 3 años": 1, "Entre 3 y 5 años": 3, "Más de 5 años": 5}
-        user_anios = ant_map.get(perfil.get("antiguedad", ""), 0)
-        df['min_anios'] = df['Antigúedad'].astype(str).str.extract(r"(\d+)").fillna(0).astype(int)
-        df = df[df['min_anios'] <= user_anios]
-
-        top_df = df.head(3).copy()
-        if top_df.empty: return None
-
-        tiene_garantia = bool(perfil.get("tiene_garantia_inmueble", False))
-        recomendaciones = []
-        
-        for _, row in top_df.iterrows():
-            # REGLA: Si hay garantía, se oculta el nombre de la financiera
-            nombre_display = "Estrategia Recomendada" if tiene_garantia else row.get("Financiera", "Opción Identificada")
-            
-            recomendaciones.append({
-                "financiera": nombre_display,
-                "tipo": str(row.get("Tipo de financiamiento", "")),
-                "caracteristicas": str(row.get("Como ayuda este financiamiento", "")),
-                "monto_ref": str(row.get("Montos en pesos", "")),
-                "plazo_ref": str(row.get("Plazos", ""))
-            })
-        return recomendaciones
     except Exception as e:
-        print(f"Error Matriz: {e}")
-        return None
+        _log(f"OpenAI error: {e}")
+        return (
+            "Nuestro equipo está procesando tu información para un diagnóstico preliminar. "
+            "Si deseas un análisis consultivo más profundo, un consultor puede revisarlo manualmente."
+        )
 
-def enviar_email_lead(perfil: dict, diag: str):
-    if not bool(perfil.get("tiene_garantia_inmueble", False)) and not perfil.get("solicita_contacto"):
-        return False
-    
-    msg = EmailMessage()
-    msg["Subject"] = f"NUEVO LEAD CAOM - {perfil.get('nombre_empresa','S/E')}"
-    msg["From"] = MAIL_FROM
-    msg["To"] = MAIL_TO
-    
-    content = f"""DETALLE DEL LEAD ASFIES CAOM
-    
-CONTACTO: {perfil.get('nombre')} {perfil.get('apellido')}
-Empresa: {perfil.get('nombre_empresa')}
-Tel: {perfil.get('telefono')} | Email: {perfil.get('correo')}
 
-SOLICITUD:
-Monto: {perfil.get('monto_requerido')}
-Plazo: {perfil.get('plazo_requerido')}
-Ventas: {perfil.get('ventas_rango')}
+# =========================
+# Rutas
+# =========================
+@app.get("/health")
+def health():
+    ok = True
+    issues = []
 
-DATOS PATRIMONIALES (GARANTÍA):
-Tipo: {perfil.get('inmueble_tipo')}
-Valor: {perfil.get('inmueble_valor_aprox')}
-¿Hipotecado?: {perfil.get('esta_hipotecado')}
-Maps: {perfil.get('ubicacion_google_maps')}
+    if not ASFIES_TOKEN:
+        ok = False
+        issues.append("Falta ASFIES_TOKEN en variables de entorno")
 
-DIAGNÓSTICO IA:
-{diag}
-"""
-    msg.set_content(content)
-    try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.send_message(msg)
-        return True
-    except: return False
-
-@app.route("/diagnostico", methods=["POST"])
-def handle_diagnostico():
-    auth = request.headers.get("Authorization")
-    if auth != f"Bearer {ASFIES_TOKEN}": return jsonify({"error": "Unauthorized"}), 401
-    
-    datos = request.json
-    opciones = filtrar_matriz(datos)
-    
-    # Generar diagnóstico con OpenAI (usando gpt-4o-mini para velocidad)
-    contexto = "con respaldo patrimonial CAOM" if datos.get("tiene_garantia_inmueble") else "financiamiento tradicional"
-    prompt = f"Genera un diagnóstico financiero para {datos.get('nombre_empresa')}. Monto: {datos.get('monto_requerido')}. Situación: {contexto}. Opciones: {opciones}. Sé técnico y elegante."
-    
-    diag_ia = "Procesando diagnóstico detallado..."
-    try:
-        resp = client.chat.completions.create(model="gpt-4o-mini", messages=[{"role":"user","content":prompt}])
-        diag_ia = resp.choices[0].message.content
-    except: pass
-
-    enviar_email_lead(datos, diag_ia)
+    # OPENAI_API_KEY puede ser opcional si quieres operar en modo fallback
+    if not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), MATRIZ_FILE)):
+        ok = False
+        issues.append(f"No se encuentra {MATRIZ_FILE} en el repo")
 
     return jsonify({
-        "status": "success",
-        "header": "Estrategias Recomendadas" if datos.get("tiene_garantia_inmueble") else "Opciones de Financiamiento",
-        "diagnostico_ia": diag_ia,
-        "recomendaciones": opciones
-    })
+        "ok": ok,
+        "issues": issues,
+        "model": MODEL,
+        "matriz_file": MATRIZ_FILE,
+    }), 200 if ok else 500
 
+
+@app.post("/diagnostico")
+def diagnostico():
+    # --- Seguridad por token
+    auth = request.headers.get("Authorization", "")
+    if not ASFIES_TOKEN:
+        return jsonify({"error": "Server misconfigured: ASFIES_TOKEN missing"}), 500
+
+    if auth != f"Bearer {ASFIES_TOKEN}":
+        return jsonify({"error": "Unauthorized"}), 401
+
+    # --- Datos
+    datos = request.get_json(silent=True) or {}
+    # Normaliza algunos campos esperados
+    datos["nombre"] = _safe_str(datos.get("nombre"))
+    datos["apellido"] = _safe_str(datos.get("apellido"))
+    datos["nombre_empresa"] = _safe_str(datos.get("nombre_empresa"))
+
+    try:
+        # 1) Recomendaciones desde matriz
+        opciones = obtener_recomendaciones(datos)
+
+        if not opciones:
+            # Respuesta consistente para el frontend
+            tiene_garantia = bool(datos.get("tiene_garantia_inmueble"))
+            header = "Tenemos las siguientes estrategias" if tiene_garantia else "Opciones de Financiamiento Identificadas"
+
+            mensaje = (
+                "Por el momento no encontramos coincidencias exactas en nuestra matriz para el perfil capturado. "
+                "Podemos revisarlo de manera manual si deseas un análisis más preciso."
+            )
+
+            return jsonify({
+                "status": "not_found",
+                "header": header,
+                "diagnostico_ia": mensaje,
+                "recomendaciones": [],
+            }), 200
+
+        # 2) Diagnóstico IA
+        diag_ia = generar_diagnostico_gpt(datos, opciones)
+
+        # 3) Header
+        header = "Tenemos las siguientes estrategias" if datos.get("tiene_garantia_inmueble") else "Opciones de Financiamiento Identificadas"
+
+        return jsonify({
+            "status": "success",
+            "header": header,
+            "diagnostico_ia": diag_ia,
+            "recomendaciones": opciones or [],
+        }), 200
+
+    except Exception as e:
+        _log("ERROR /diagnostico\n" + traceback.format_exc())
+        return jsonify({
+            "status": "error",
+            "error": "Error interno procesando el diagnóstico",
+            "detail": str(e),
+            "recomendaciones": [],
+        }), 500
+
+
+# =========================
+# Local run (Render usa gunicorn normalmente)
+# =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    port = int(os.environ.get("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
