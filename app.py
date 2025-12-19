@@ -186,7 +186,7 @@ LISTA DE OPCIONES (JSON):
 
 INSTRUCCIONES:
 - Si hay garantía: habla de “estrategias” y menciona CAOM.
-- Si NO hay garantía: tono sutil, alcance preliminar.
+- Si NO hay garantía: tono sutil, alcance preliminar pon un enfasis de que nostros lamentablmente no lo podemos ayudar pero le hacemos unas recomendaciones, el no lo podemos ayudar que no sea tan estricto con una disculpa.
 """.strip()
 
     try:
