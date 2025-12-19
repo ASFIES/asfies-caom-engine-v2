@@ -13,14 +13,11 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 
-# =========================
-# App
-# =========================
 app = Flask(__name__)
 CORS(app)
 
 # =========================
-# Config (ENV ONLY)
+# ENV
 # =========================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ASFIES_TOKEN = os.getenv("ASFIES_TOKEN", "").strip()
@@ -28,13 +25,12 @@ ASFIES_TOKEN = os.getenv("ASFIES_TOKEN", "").strip()
 MODEL = os.getenv("MODEL", "gpt-4o-mini").strip()
 MATRIZ_FILE = os.getenv("MATRIZ_FILE", "matriz.xlsx").strip()
 
-# Email (Webempresa SMTP)
 SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587").strip() or "587")
+SMTP_PORT = int((os.getenv("SMTP_PORT", "587") or "587").strip())
 SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASS = os.getenv("SMTP_PASS", "").strip()
-SMTP_FROM = os.getenv("SMTP_FROM", "").strip()  # "ASFIES CAOM <no-reply@dominio.com>"
-SMTP_TO = os.getenv("SMTP_TO", "").strip()      # "a@gmail.com,b@gmail.com"
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
+SMTP_TO = os.getenv("SMTP_TO", "").strip()
 
 _MATRIZ_CACHE: Optional[pd.DataFrame] = None
 
@@ -45,6 +41,16 @@ def _log(msg: str):
 
 def _safe_str(x: Any) -> str:
     return "" if x is None else str(x).strip()
+
+
+def _as_bool(v: Any) -> bool:
+    """
+    Convierte True/False aunque llegue como string ("true", "false", "1", "0").
+    """
+    if isinstance(v, bool):
+        return v
+    s = _safe_str(v).lower()
+    return s in ("true", "1", "yes", "si", "sí", "y")
 
 
 def _load_matriz() -> pd.DataFrame:
@@ -61,7 +67,7 @@ def _load_matriz() -> pd.DataFrame:
     df = pd.read_excel(path)
     df.columns = [c.strip() for c in df.columns]
     _MATRIZ_CACHE = df
-    _log(f"Matriz cargada: {path} (filas={len(df)}, cols={len(df.columns)})")
+    _log(f"Matriz cargada OK: {path} | filas={len(df)} cols={len(df.columns)}")
     return df
 
 
@@ -82,9 +88,6 @@ def _map_antiguedad_user(texto: str) -> int:
 
 
 def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Retorna financieras (para caso SIN garantía).
-    """
     df = _load_matriz().copy()
 
     rango = _safe_str(perfil.get("ventas_rango"))
@@ -143,15 +146,12 @@ def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str
 
 
 def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Convierte “financieras” a “estrategias” SIN exponer instituciones.
-    (Mantiene estructura compatible con el plugin.)
-    """
+    # Versión simple: 3 estrategias genéricas sin exponer institución
+    nombres = ["Estrategia Alfa", "Estrategia Fénix", "Estrategia Delta"]
     estrategias = []
     for i, r in enumerate(recs, start=1):
-        # Estrategia título genérico (sin financiera)
         estrategias.append({
-            "estrategia": f"Estrategia {i}: Estructuración con Respaldo Inmobiliario",
+            "estrategia": f"{nombres[i-1] if i-1 < len(nombres) else f'Estrategia {i}'}: Optimización con Respaldo Inmobiliario",
             "tipo": _safe_str(r.get("tipo")),
             "caracteristicas": _safe_str(r.get("caracteristicas")),
             "monto_ref": _safe_str(r.get("monto_ref")),
@@ -161,17 +161,24 @@ def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, 
 
 
 def generar_diagnostico_gpt(perfil: Dict[str, Any], items: List[Dict[str, Any]], es_garantia: bool) -> str:
+    # Si no hay OpenAI, regresa texto base
     if not OPENAI_API_KEY:
+        if es_garantia:
+            return (
+                "Con base en tu perfil y el respaldo patrimonial, identificamos estrategias viables para estructurar "
+                "financiamiento bajo CAOM. Un estratega te contactará a la brevedad para validar supuestos y "
+                "confirmar la ruta óptima."
+            )
         return (
-            "Hemos procesado tu información para un diagnóstico preliminar. "
-            "Las recomendaciones mostradas se basan en nuestra matriz y un análisis inicial."
+            "Con base en tu perfil, te compartimos recomendaciones preliminares disponibles en nuestra matriz. "
+            "En este momento, el alcance es informativo y depende de validación documental posterior."
         )
 
-    contexto = "con garantía inmobiliaria bajo la metodología CAOM" if es_garantia else "sin garantía inmobiliaria"
+    contexto = "con garantía inmobiliaria bajo CAOM" if es_garantia else "sin garantía inmobiliaria"
 
     prompt = f"""
 Eres un asesor financiero experto de ASFIES Negocios Consulting.
-Redacta un diagnóstico profesional, consultivo, elegante y técnico (máximo 2 párrafos).
+Redacta un diagnóstico profesional, consultivo y técnico (máximo 2 párrafos).
 
 PERFIL:
 - Contacto: {perfil.get("nombre","")} {perfil.get("apellido","")}
@@ -181,12 +188,16 @@ PERFIL:
 - Tipo de financiamiento: {perfil.get("tipo_financiamiento","")}
 - Estado: {contexto}
 
-LISTA DE OPCIONES (JSON):
+LISTA (JSON):
 {json.dumps(items, ensure_ascii=False)}
 
 INSTRUCCIONES:
-- Si hay garantía: habla de “estrategias” y menciona CAOM no pongas estrategia 1 o 3 sino estrategia mas optima y asi las demas menciona que las estragias ponle un nombre por ejemplo estrategia alfa o fenix pero que se entienda a que nos referimos.
-- Si NO hay garantía: tono sutil, alcance preliminar pon un enfasis de que nostros lamentablmente no lo podemos ayudar pero le hacemos unas recomendaciones, el no lo podemos ayudar que no sea tan estricto con una disculpa el nombre de quien suscribe es Miguel Angel Briseño Estratega en Financiamiento.
+- Si hay garantía: habla de “estrategias” con nombre (Alfa/Fénix/Delta) y menciona CAOM.
+  Cierra con:
+  "Atentamente, Miguel Angel Briseño · mbriseño@asfies.mx · 55 3573 8572"
+  y menciona que contactaremos al correo/teléfono capturados.
+- Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
+  pero dejamos recomendaciones preliminares. Firma igual: Miguel Angel Briseño, Estratega en Financiamiento.
 """.strip()
 
     try:
@@ -204,10 +215,11 @@ INSTRUCCIONES:
 
 
 def send_lead_email(perfil: Dict[str, Any], estrategias: List[Dict[str, Any]]) -> None:
-    """
-    Envía correo SOLO para leads con garantía inmobiliaria (o si solicitan contacto).
-    """
-    if not (SMTP_HOST and SMTP_USER and SMTP_PASS and SMTP_FROM and SMTP_TO):
+    # Log para confirmar intento
+    email_ok = all([SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_TO])
+    _log(f"Email attempt? email_configured={email_ok} host={SMTP_HOST} port={SMTP_PORT} from_set={bool(SMTP_FROM)} to_set={bool(SMTP_TO)}")
+
+    if not email_ok:
         _log("Email SKIPPED: faltan variables SMTP_* en Render.")
         return
 
@@ -248,10 +260,12 @@ Ubicación (Maps): {perfil.get('ubicacion_google_maps','')}
 
     try:
         if SMTP_PORT == 465:
-            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20)
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=25)
         else:
-            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20)
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=25)
+            server.ehlo()
             server.starttls()
+            server.ehlo()
 
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(SMTP_USER, to_list, msg.as_string())
@@ -299,11 +313,15 @@ def diagnostico():
     datos["nombre"] = _safe_str(datos.get("nombre"))
     datos["apellido"] = _safe_str(datos.get("apellido"))
     datos["nombre_empresa"] = _safe_str(datos.get("nombre_empresa"))
-    es_garantia = bool(datos.get("tiene_garantia_inmueble"))
-    solicita_contacto = bool(datos.get("solicita_contacto"))
+
+    es_garantia = _as_bool(datos.get("tiene_garantia_inmueble"))
+    solicita_contacto = _as_bool(datos.get("solicita_contacto"))
+
+    _log(f"/diagnostico received | es_garantia={es_garantia} solicita_contacto={solicita_contacto} empresa='{datos.get('nombre_empresa','')}'")
 
     try:
         financieras = obtener_recomendaciones_financieras(datos)
+        _log(f"Recomendaciones encontradas: {len(financieras)}")
 
         if not financieras:
             header = "Tenemos las siguientes estrategias" if es_garantia else "Opciones de Financiamiento Identificadas"
@@ -321,19 +339,17 @@ def diagnostico():
             estrategias = recomendaciones_a_estrategias(financieras)
             diag = generar_diagnostico_gpt(datos, estrategias, es_garantia=True)
 
-            # Enviar correo SOLO para garantía (y/o si pide contacto)
-            if es_garantia and (solicita_contacto or True):
-                send_lead_email(datos, estrategias)
+            _log("Garantía=TRUE -> intentar envío de correo…")
+            # Si quieres mandar SIEMPRE que haya garantía:
+            send_lead_email(datos, estrategias)
 
             return jsonify({
                 "status": "success",
                 "header": "Tenemos las siguientes estrategias",
-                # Aquí devolvemos ESTRATEGIAS (sin financieras)
                 "diagnostico_ia": diag,
                 "recomendaciones": estrategias,
             }), 200
 
-        # SIN garantía: muestra financieras
         diag = generar_diagnostico_gpt(datos, financieras, es_garantia=False)
         return jsonify({
             "status": "success",
@@ -342,12 +358,11 @@ def diagnostico():
             "recomendaciones": financieras,
         }), 200
 
-    except Exception as e:
+    except Exception:
         _log("ERROR /diagnostico\n" + traceback.format_exc())
         return jsonify({
             "status": "error",
             "error": "Error interno procesando el diagnóstico",
-            "detail": str(e),
             "recomendaciones": [],
         }), 500
 
@@ -355,4 +370,3 @@ def diagnostico():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-
