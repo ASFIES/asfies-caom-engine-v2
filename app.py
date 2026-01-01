@@ -147,7 +147,7 @@ def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str
 
 def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # Versión simple: 3 estrategias genéricas sin exponer institución
-    nombres = ["Estrategia Alfa", "Estrategia Fénix", "Estrategia Delta"]
+    nombres = ["Estrategia Alfa", "Estrategia Beta", "Estrategia Delta"]
     estrategias = []
     for i, r in enumerate(recs, start=1):
         estrategias.append({
@@ -192,9 +192,9 @@ LISTA (JSON):
 {json.dumps(items, ensure_ascii=False)}
 
 INSTRUCCIONES:
-- Si hay garantía: habla de “estrategias” con nombre (Alfa/Fénix/Delta) y menciona CAOM.
+- Si hay garantía: habla de “estrategias” con nombre (Alfa/Beta/Delta) y menciona CAOM.
   Cierra con:
-  "Atentamente, Miguel Angel Briseño · mbriseño@asfies.mx · 55 3573 8572"
+  "Atentamente, Miguel Angel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
   y menciona que contactaremos al correo/teléfono capturados.
 - Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
   pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group correo consulting@asfiesgroup.com, Estratega en Financiamiento.
