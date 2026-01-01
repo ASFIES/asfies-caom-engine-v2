@@ -197,7 +197,7 @@ INSTRUCCIONES:
   "Atentamente, Miguel Angel Briseño · mbriseño@asfies.mx · 55 3573 8572"
   y menciona que contactaremos al correo/teléfono capturados.
 - Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
-  pero dejamos recomendaciones preliminares. Firma igual: Miguel Angel Briseño, Estratega en Financiamiento.
+  pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group correo consulting@asfiesgroup.com, Estratega en Financiamiento.
 """.strip()
 
     try:
