@@ -231,7 +231,7 @@ INSTRUCCIONES:
 - Si hay garantía: habla de “estrategias” con nombre (Alfa/Beta/Delta) y menciona CAOM.
   Cierra con:
   "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
-- Si NO hay garantía: tono sutil, menciona recomendaciones preliminares. No pidas datos ni contacto.
+- Si NO hay garantía: tono sutil que no podemos dar el servicio y agrademos su tiempo, menciona recomendaciones preliminares y dile que puede contactar las opciones presentadas. No pidas datos ni contacto.
   Cierra con: "Atentamente, ASFIES GROUP"
 """.strip()
 
