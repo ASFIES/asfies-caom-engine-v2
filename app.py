@@ -12,7 +12,6 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
-
 app = Flask(__name__)
 CORS(app)
 
@@ -44,11 +43,18 @@ def _safe_str(x: Any) -> str:
 
 
 def _as_bool(v: Any) -> bool:
-    """Convierte True/False aunque llegue como string ("true", "false", "1", "0")."""
     if isinstance(v, bool):
         return v
     s = _safe_str(v).lower()
     return s in ("true", "1", "yes", "si", "sí", "y")
+
+
+def _get_bool_any(data: Dict[str, Any], keys: List[str], default: bool = False) -> bool:
+    """Lee booleano desde varias llaves por compatibilidad con front."""
+    for k in keys:
+        if k in data and data.get(k) is not None:
+            return _as_bool(data.get(k))
+    return default
 
 
 def _load_matriz() -> pd.DataFrame:
@@ -127,7 +133,7 @@ def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str
 
     c_fin = col("Financiera", "Nombre", "Institución")
     c_tipo = col("Tipo de financiamiento", "Tipo", "Producto")
-    c_ayu = col("Como ayuda este financiamiento", "Cómo ayuda este financiamiento", "Ayuda", "Descripción")
+    c_ayu = col("Como ayuda este financiamiento", "Cómo ayuda este financiamiento", "Ayuda", "Descripción", "Características", "Caracteristicas")
     c_mto = col("Montos en pesos", "Monto", "Montos")
     c_plz = col("Plazos", "Plazo")
 
@@ -144,7 +150,6 @@ def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str
 
 
 def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # 3 estrategias genéricas sin exponer institución
     nombres = ["Estrategia Alfa", "Estrategia Beta", "Estrategia Delta"]
     estrategias = []
     for i, r in enumerate(recs, start=1):
@@ -160,27 +165,30 @@ def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, 
 
 def _enriquecer_resultados(items: List[Dict[str, Any]], es_garantia: bool) -> List[Dict[str, Any]]:
     """
-    Asegura que EN AMBOS CASOS el front tenga:
-    - titulo (Estrategia o Financiera)
-    - subtitulo (Tipo de financiamiento)
-    - resumen (Características)
-    Mantiene también las llaves originales para no romper integraciones existentes.
+    Produce SIEMPRE:
+    - titulo
+    - subtitulo
+    - resumen
+
+    Mantiene llaves originales:
+    - (garantía) estrategia/tipo/caracteristicas
+    - (sin garantía) financiera/tipo/caracteristicas
     """
     out: List[Dict[str, Any]] = []
     for it in items:
         if es_garantia:
-            titulo = _safe_str(it.get("estrategia"))
+            titulo = _safe_str(it.get("titulo") or it.get("estrategia") or it.get("financiera"))
         else:
-            titulo = _safe_str(it.get("financiera"))
+            titulo = _safe_str(it.get("titulo") or it.get("financiera") or it.get("estrategia"))
 
-        subtitulo = _safe_str(it.get("tipo"))
-        resumen = _safe_str(it.get("caracteristicas"))
+        subtitulo = _safe_str(it.get("subtitulo") or it.get("tipo"))
+        resumen = _safe_str(it.get("resumen") or it.get("caracteristicas"))
 
         merged = dict(it)
         merged.update({
-            "titulo": titulo,         # <- usar esto en resultados
-            "subtitulo": subtitulo,   # <- tipo
-            "resumen": resumen,       # <- características
+            "titulo": titulo,
+            "subtitulo": subtitulo,
+            "resumen": resumen,
             "display": f"{titulo} — {subtitulo}" if titulo and subtitulo else (titulo or subtitulo),
         })
         out.append(merged)
@@ -188,17 +196,18 @@ def _enriquecer_resultados(items: List[Dict[str, Any]], es_garantia: bool) -> Li
 
 
 def generar_diagnostico_gpt(perfil: Dict[str, Any], items: List[Dict[str, Any]], es_garantia: bool) -> str:
-    # Si no hay OpenAI, regresa texto base
     if not OPENAI_API_KEY:
         if es_garantia:
             return (
                 "Con base en tu perfil y el respaldo patrimonial, identificamos estrategias viables para estructurar "
                 "financiamiento bajo CAOM. Un estratega te contactará a la brevedad para validar supuestos y "
-                "confirmar la ruta óptima."
+                "confirmar la ruta óptima.\n\n"
+                "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
             )
         return (
             "Con base en tu perfil, te compartimos recomendaciones preliminares disponibles en nuestra matriz. "
-            "En este momento, el alcance es informativo y depende de validación documental posterior."
+            "En este momento, el alcance es informativo y depende de validación documental posterior.\n\n"
+            "Atentamente, ASFIES GROUP"
         )
 
     contexto = "con garantía inmobiliaria bajo CAOM" if es_garantia else "sin garantía inmobiliaria"
@@ -222,10 +231,8 @@ INSTRUCCIONES:
 - Si hay garantía: habla de “estrategias” con nombre (Alfa/Beta/Delta) y menciona CAOM.
   Cierra con:
   "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
-  y menciona que contactaremos al correo/teléfono capturados.
-- Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
-  pero dejamos recomendaciones preliminares. No pidas datos, no menciones contacto.
-  Cierra con: "Atentamente ASFIES GROUP"
+- Si NO hay garantía: tono sutil, menciona recomendaciones preliminares. No pidas datos ni contacto.
+  Cierra con: "Atentamente, ASFIES GROUP"
 """.strip()
 
     try:
@@ -243,7 +250,6 @@ INSTRUCCIONES:
 
 
 def send_lead_email(perfil: Dict[str, Any], estrategias: List[Dict[str, Any]]) -> None:
-    # Log para confirmar intento
     email_ok = all([SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_TO])
     _log(f"Email attempt? email_configured={email_ok} host={SMTP_HOST} port={SMTP_PORT} from_set={bool(SMTP_FROM)} to_set={bool(SMTP_TO)}")
 
@@ -342,13 +348,16 @@ def diagnostico():
     datos["apellido"] = _safe_str(datos.get("apellido"))
     datos["nombre_empresa"] = _safe_str(datos.get("nombre_empresa"))
 
-    # Bandera principal
-    es_garantia = _as_bool(datos.get("tiene_garantia_inmueble"))
+    # Garantía: acepta alias por robustez
+    es_garantia = _get_bool_any(datos, [
+        "tiene_garantia_inmueble",
+        "tiene_garantia",
+        "garantia_inmobiliaria",
+        "garantia",
+        "inmueble_garantia",
+    ], default=False)
 
-    # IMPORTANTE:
-    # Si NO hay garantía, queremos que el flujo pase directo a resultados:
-    # - No avisos, no privacidad, no pedir datos extra.
-    # En backend lo señalamos explícitamente para que tu front/AppSheet lo respete.
+    # Señales (tu PHP no las usa, pero las dejamos útiles)
     flow = {
         "requires_privacy": True,
         "requires_contact": True,
@@ -364,23 +373,21 @@ def diagnostico():
     _log(f"/diagnostico received | es_garantia={es_garantia} empresa='{datos.get('nombre_empresa','')}'")
 
     try:
-        financieras = obtener_recomendaciones_financieras(datos)
-        _log(f"Recomendaciones encontradas: {len(financieras)}")
+        recs = obtener_recomendaciones_financieras(datos)
+        _log(f"Recomendaciones encontradas: {len(recs)}")
 
-        if not financieras:
-            header = "Tenemos las siguientes estrategias" if es_garantia else "Resultados preliminares"
+        if not recs:
+            header = "Tenemos las siguientes estrategias" if es_garantia else "Resultados preliminares (sin garantía inmobiliaria)"
             return jsonify({
                 "status": "not_found",
                 "header": header,
                 "flow": flow,
-                "diagnostico_ia": (
-                    "Por el momento no encontramos coincidencias exactas en nuestra matriz para el perfil capturado."
-                ),
+                "diagnostico_ia": "Por el momento no encontramos coincidencias exactas en nuestra matriz para el perfil capturado.",
                 "recomendaciones": [],
             }), 200
 
         if es_garantia:
-            estrategias = recomendaciones_a_estrategias(financieras)
+            estrategias = recomendaciones_a_estrategias(recs)
             estrategias = _enriquecer_resultados(estrategias, es_garantia=True)
 
             diag = generar_diagnostico_gpt(datos, estrategias, es_garantia=True)
@@ -396,16 +403,16 @@ def diagnostico():
                 "recomendaciones": estrategias,
             }), 200
 
-        # SIN GARANTÍA: directo a resultados, sin privacidad ni datos extra
-        financieras = _enriquecer_resultados(financieras, es_garantia=False)
-        diag = generar_diagnostico_gpt(datos, financieras, es_garantia=False)
+        # SIN GARANTÍA: directo a resultados
+        recs = _enriquecer_resultados(recs, es_garantia=False)
+        diag = generar_diagnostico_gpt(datos, recs, es_garantia=False)
 
         return jsonify({
             "status": "success",
             "header": "Resultados preliminares (sin garantía inmobiliaria)",
             "flow": flow,
             "diagnostico_ia": diag,
-            "recomendaciones": financieras,
+            "recomendaciones": recs,
         }), 200
 
     except Exception:
