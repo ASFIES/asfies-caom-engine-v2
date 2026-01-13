@@ -198,6 +198,9 @@ INSTRUCCIONES:
   y menciona que contactaremos al correo/teléfono capturados.
 - Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
   pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group, Estratega en Financiamiento. Si más datos que ASFIES GROUP en ATENTAMENTE.
+  INSTRUCCIONES DE FIRMA:
+- Si hay garantía: Cierra con "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com" y menciona que un estratega contactará.
+- Si NO hay garantía: No pidas datos, no menciones contacto. Solo di "Atentamente ASFIES GROUP".
 """.strip()
 
     try:
