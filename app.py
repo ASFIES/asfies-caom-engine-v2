@@ -44,9 +44,7 @@ def _safe_str(x: Any) -> str:
 
 
 def _as_bool(v: Any) -> bool:
-    """
-    Convierte True/False aunque llegue como string ("true", "false", "1", "0").
-    """
+    """Convierte True/False aunque llegue como string ("true", "false", "1", "0")."""
     if isinstance(v, bool):
         return v
     s = _safe_str(v).lower()
@@ -146,7 +144,7 @@ def obtener_recomendaciones_financieras(perfil: Dict[str, Any]) -> List[Dict[str
 
 
 def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # Versión simple: 3 estrategias genéricas sin exponer institución
+    # 3 estrategias genéricas sin exponer institución
     nombres = ["Estrategia Alfa", "Estrategia Beta", "Estrategia Delta"]
     estrategias = []
     for i, r in enumerate(recs, start=1):
@@ -158,6 +156,35 @@ def recomendaciones_a_estrategias(recs: List[Dict[str, Any]]) -> List[Dict[str, 
             "plazo_ref": _safe_str(r.get("plazo_ref")),
         })
     return estrategias
+
+
+def _enriquecer_resultados(items: List[Dict[str, Any]], es_garantia: bool) -> List[Dict[str, Any]]:
+    """
+    Asegura que EN AMBOS CASOS el front tenga:
+    - titulo (Estrategia o Financiera)
+    - subtitulo (Tipo de financiamiento)
+    - resumen (Características)
+    Mantiene también las llaves originales para no romper integraciones existentes.
+    """
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        if es_garantia:
+            titulo = _safe_str(it.get("estrategia"))
+        else:
+            titulo = _safe_str(it.get("financiera"))
+
+        subtitulo = _safe_str(it.get("tipo"))
+        resumen = _safe_str(it.get("caracteristicas"))
+
+        merged = dict(it)
+        merged.update({
+            "titulo": titulo,         # <- usar esto en resultados
+            "subtitulo": subtitulo,   # <- tipo
+            "resumen": resumen,       # <- características
+            "display": f"{titulo} — {subtitulo}" if titulo and subtitulo else (titulo or subtitulo),
+        })
+        out.append(merged)
+    return out
 
 
 def generar_diagnostico_gpt(perfil: Dict[str, Any], items: List[Dict[str, Any]], es_garantia: bool) -> str:
@@ -197,10 +224,8 @@ INSTRUCCIONES:
   "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
   y menciona que contactaremos al correo/teléfono capturados.
 - Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
-  pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group, Estratega en Financiamiento. Si más datos que ASFIES GROUP en ATENTAMENTE.
-  INSTRUCCIONES DE FIRMA:
-- Si hay garantía: Cierra con "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com" y menciona que un estratega contactará.
-- Si NO hay garantía: No pidas datos, no menciones contacto. Solo di "Atentamente ASFIES GROUP".
+  pero dejamos recomendaciones preliminares. No pidas datos, no menciones contacto.
+  Cierra con: "Atentamente ASFIES GROUP"
 """.strip()
 
     try:
@@ -312,51 +337,73 @@ def diagnostico():
 
     datos = request.get_json(silent=True) or {}
 
-    # Normaliza
+    # Normaliza campos básicos
     datos["nombre"] = _safe_str(datos.get("nombre"))
     datos["apellido"] = _safe_str(datos.get("apellido"))
     datos["nombre_empresa"] = _safe_str(datos.get("nombre_empresa"))
 
+    # Bandera principal
     es_garantia = _as_bool(datos.get("tiene_garantia_inmueble"))
-    solicita_contacto = _as_bool(datos.get("solicita_contacto"))
 
-    _log(f"/diagnostico received | es_garantia={es_garantia} solicita_contacto={solicita_contacto} empresa='{datos.get('nombre_empresa','')}'")
+    # IMPORTANTE:
+    # Si NO hay garantía, queremos que el flujo pase directo a resultados:
+    # - No avisos, no privacidad, no pedir datos extra.
+    # En backend lo señalamos explícitamente para que tu front/AppSheet lo respete.
+    flow = {
+        "requires_privacy": True,
+        "requires_contact": True,
+        "skip_to_results": False,
+    }
+    if not es_garantia:
+        flow = {
+            "requires_privacy": False,
+            "requires_contact": False,
+            "skip_to_results": True,
+        }
+
+    _log(f"/diagnostico received | es_garantia={es_garantia} empresa='{datos.get('nombre_empresa','')}'")
 
     try:
         financieras = obtener_recomendaciones_financieras(datos)
         _log(f"Recomendaciones encontradas: {len(financieras)}")
 
         if not financieras:
-            header = "Tenemos las siguientes estrategias" if es_garantia else "Opciones de Financiamiento Identificadas"
+            header = "Tenemos las siguientes estrategias" if es_garantia else "Resultados preliminares"
             return jsonify({
                 "status": "not_found",
                 "header": header,
+                "flow": flow,
                 "diagnostico_ia": (
-                    "Por el momento no encontramos coincidencias exactas en nuestra matriz para el perfil capturado. "
-                    "Si lo deseas, un consultor puede revisarlo manualmente."
+                    "Por el momento no encontramos coincidencias exactas en nuestra matriz para el perfil capturado."
                 ),
                 "recomendaciones": [],
             }), 200
 
         if es_garantia:
             estrategias = recomendaciones_a_estrategias(financieras)
+            estrategias = _enriquecer_resultados(estrategias, es_garantia=True)
+
             diag = generar_diagnostico_gpt(datos, estrategias, es_garantia=True)
 
             _log("Garantía=TRUE -> intentar envío de correo…")
-            # Si quieres mandar SIEMPRE que haya garantía:
             send_lead_email(datos, estrategias)
 
             return jsonify({
                 "status": "success",
                 "header": "Tenemos las siguientes estrategias",
+                "flow": flow,
                 "diagnostico_ia": diag,
                 "recomendaciones": estrategias,
             }), 200
 
+        # SIN GARANTÍA: directo a resultados, sin privacidad ni datos extra
+        financieras = _enriquecer_resultados(financieras, es_garantia=False)
         diag = generar_diagnostico_gpt(datos, financieras, es_garantia=False)
+
         return jsonify({
             "status": "success",
-            "header": "Opciones de Financiamiento Identificadas",
+            "header": "Resultados preliminares (sin garantía inmobiliaria)",
+            "flow": flow,
             "diagnostico_ia": diag,
             "recomendaciones": financieras,
         }), 200
@@ -365,6 +412,7 @@ def diagnostico():
         _log("ERROR /diagnostico\n" + traceback.format_exc())
         return jsonify({
             "status": "error",
+            "flow": {"requires_privacy": False, "requires_contact": False, "skip_to_results": True},
             "error": "Error interno procesando el diagnóstico",
             "recomendaciones": [],
         }), 500
