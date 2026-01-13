@@ -194,10 +194,10 @@ LISTA (JSON):
 INSTRUCCIONES:
 - Si hay garantía: habla de “estrategias” con nombre (Alfa/Beta/Delta) y menciona CAOM.
   Cierra con:
-  "Atentamente, Miguel Angel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
+  "Atentamente, Miguel Ángel Briseño · consulting@asfiesgroup.com · 55 3573 8572"
   y menciona que contactaremos al correo/teléfono capturados.
 - Si NO hay garantía: tono sutil, menciona que por ahora no podemos acompañar el caso como CAOM,
-  pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group correo consulting@asfiesgroup.com, Estratega en Financiamiento.
+  pero dejamos recomendaciones preliminares. Firma igual: ASFIES Group, Estratega en Financiamiento. Si más datos que ASFIES GROUP en ATENTAMENTE.
 """.strip()
 
     try:
